@@ -1,9 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Camera, CameraOff, Mic, MicOff, Pause, Play, Square, Trash2,
   CircleDot, Eye, Gauge, Activity, ShieldCheck, Volume2, Music2,
+  Briefcase, ChevronRight, ChevronLeft, HelpCircle
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MODES } from "@/constants";
@@ -12,6 +13,8 @@ import { fmtDuration } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { CircularProgress } from "@/components/common/circular-progress";
 import type { SessionMode } from "@/types";
+import { createSession, uploadAudio, transcribeSession, analyzeMetrics, generateFeedback, getSessions } from "@/lib/api";
+import { useRecorder } from "@/hooks/useRecorder";
 
 export const Route = createFileRoute("/recorder")({
   head: () => ({
@@ -23,30 +26,70 @@ export const Route = createFileRoute("/recorder")({
   component: Recorder,
 });
 
+// Practice questions mapped by job profile
+const JOB_QUESTIONS: Record<string, string[]> = {
+  "Software Engineer": [
+    "Tell me about a challenging technical problem you solved and how you approached it.",
+    "How do you handle disagreement with a technical decision made by your lead or peer?",
+    "Explain the difference between SQL and NoSQL databases, and when you would choose one over the other.",
+    "Describe your experience with system design and how you ensure scalability."
+  ],
+  "Product Manager": [
+    "How do you prioritize features for a product roadmap when faced with conflicting stakeholder inputs?",
+    "Tell me about a product you love and how you would improve it to increase engagement.",
+    "How do you define and measure success for a new feature launch?",
+    "Describe a time you had to make a product decision without complete data."
+  ],
+  "Data Analyst": [
+    "Describe a time you discovered an unexpected trend or insight in a dataset. How did you communicate it?",
+    "How do you clean and validate noisy or incomplete data before beginning your analysis?",
+    "Explain what a statistical p-value or A/B test is to a non-technical business partner.",
+    "Which tools (SQL, Python, Excel, Tableau) do you prefer for data visualization and why?"
+  ],
+  "General / Other": [
+    "Tell me about yourself and why you are interested in this position.",
+    "Describe a time you had to work closely with someone whose style or personality was very different from yours.",
+    "What is your greatest professional achievement and how did you accomplish it?",
+    "How do you manage multiple tight deadlines or project priorities?"
+  ]
+};
+
 function Recorder() {
   const { status, mode, elapsed, setMode, start, pause, resume, stop, reset, tick } = useRecordingStore();
   const { metrics, randomize } = useMetricsStore();
   const addSession = useSessionStore((s) => s.add);
+  const backendActive = useSessionStore((s) => s.backendActive);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  
   const [camOn, setCamOn] = useState(false);
   const [micOn, setMicOn] = useState(true);
   const [camError, setCamError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    if (camOn) {
-      navigator.mediaDevices
-        .getUserMedia({ video: true, audio: micOn })
-        .then((s) => {
-          stream = s;
-          if (videoRef.current) videoRef.current.srcObject = s;
-          setCamError(null);
-        })
-        .catch((e) => setCamError(e.message || "Camera unavailable"));
-    }
-    return () => stream?.getTracks().forEach((t) => t.stop());
-  }, [camOn, micOn]);
+  // Job profile state
+  const [jobProfile, setJobProfile] = useState<string>("Software Engineer");
+  const [currentQuestionIdx, setCurrentQuestionIdx] = useState<number>(0);
 
+  // Audio chunk handler
+  const handleAudioChunk = useCallback((chunk: Blob) => {
+    audioChunksRef.current.push(chunk);
+  }, []);
+
+  // Initialize recorder hook
+  const { isRecording, stream, startRecording, stopRecording } = useRecorder({
+    onAudioChunk: handleAudioChunk,
+  });
+
+  // Bind video element stream
+  useEffect(() => {
+    if (stream && videoRef.current) {
+      videoRef.current.srcObject = stream;
+      setCamOn(true);
+    }
+  }, [stream]);
+
+  // Jitter live metrics during recording
   useEffect(() => {
     if (status !== "recording") return;
     const id = setInterval(() => {
@@ -56,10 +99,26 @@ function Recorder() {
     return () => clearInterval(id);
   }, [status, tick, randomize]);
 
-  const onStop = () => {
+  const onStart = async () => {
+    audioChunksRef.current = [];
+    await startRecording();
+    start();
+  };
+
+  const onStop = async () => {
+    stopRecording();
     stop();
     const now = new Date().toISOString();
-    addSession({
+    
+    // Construct audio blob from recorded chunks
+    const audioBlob = audioChunksRef.current.length > 0 
+      ? new Blob(audioChunksRef.current, { type: "audio/webm" })
+      : new Blob([new Uint8Array(1000)], { type: "audio/wav" }); // fallback dummy
+
+    const currentQuestion = mode === "interview" ? JOB_QUESTIONS[jobProfile][currentQuestionIdx] : "General speaking practice";
+    const sessionTitle = mode === "interview" ? `${jobProfile} Interview Practice` : `${mode.charAt(0).toUpperCase() + mode.slice(1)} Practice`;
+
+    const fallbackSession = {
       id: `sess_${Date.now()}`,
       date: now,
       mode,
@@ -68,17 +127,56 @@ function Recorder() {
         (metrics.eyeContact + metrics.pitchVariance + metrics.volumeConsistency + metrics.postureScore + metrics.headStability + (100 - metrics.fillerWords * 2)) / 6,
       ),
       metrics,
-      strengths: ["Confident opening", "Clear articulation"],
+      strengths: ["Confident opening", "Clear articulation", "Good posture stability"],
       improvements: ["Reduce filler words", "Vary pitch on key points"],
-      suggestions: ["Practice STAR answers", "Run a 60s elevator pitch tomorrow"],
+      suggestions: [`Keep practicing ${jobProfile} questions`, "Structure answers with STAR method"],
       timeline: [
-        { start: "00:00", end: "01:00", label: "Strong opening, confident tone", kind: "positive" },
-        { start: "01:00", end: "02:10", label: "Good pace maintained", kind: "positive" },
-        { start: "02:10", end: "02:40", label: "Long pause detected", kind: "warning" },
+        { start: "00:00", end: "00:30", label: "Steady vocal delivery", kind: "positive" },
+        { start: "00:30", end: "00:45", label: "Slight pacing drop", kind: "neutral" },
+        { start: "00:45", end: "01:00", label: "Use of filler word 'like'", kind: "warning" },
       ],
-    });
+    };
+
+    if (!backendActive) {
+      addSession(fallbackSession);
+      reset();
+      return;
+    }
+
+    try {
+      const sess = await createSession(sessionTitle, mode);
+      const sessionId = sess.id;
+
+      // Upload actual audio file
+      await uploadAudio(sessionId, audioBlob);
+      await transcribeSession(sessionId);
+      await analyzeMetrics(sessionId, {
+        eyeContact: metrics.eyeContact,
+        postureScore: metrics.postureScore,
+        headStability: metrics.headStability,
+        fidgetScore: 10,
+      });
+      await generateFeedback(sessionId);
+
+      // Re-sync sessions list
+      const fetched = await getSessions();
+      if (fetched.length > 0) {
+        useSessionStore.setState({ sessions: fetched });
+      }
+    } catch (e) {
+      console.error("Backend pipeline failed, falling back to client-side mock:", e);
+      addSession(fallbackSession);
+    }
     reset();
   };
+
+  const handleDiscard = () => {
+    stopRecording();
+    reset();
+    setCamOn(false);
+  };
+
+  const activeQuestions = JOB_QUESTIONS[jobProfile] || JOB_QUESTIONS["General / Other"];
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -90,11 +188,63 @@ function Recorder() {
         <StatusPill status={status} />
       </header>
 
+      {/* Main recording workspace */}
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
-        {/* Camera / controls */}
+        
+        {/* Left pane: Video, questions, profile select */}
         <div className="space-y-4">
+          
+          {/* Question / Prompter Panel during Interview Practice */}
+          <AnimatePresence>
+            {mode === "interview" && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="glass-strong rounded-2xl p-5 border-primary/20 shadow-glow"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-primary">
+                    <Briefcase className="h-5 w-5" />
+                    <span className="text-sm font-semibold">{jobProfile} Profile</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      disabled={currentQuestionIdx === 0}
+                      onClick={() => setCurrentQuestionIdx((p) => Math.max(0, p - 1))}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                    <span className="text-xs font-mono text-muted-foreground">
+                      {currentQuestionIdx + 1} / {activeQuestions.length}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      disabled={currentQuestionIdx === activeQuestions.length - 1}
+                      onClick={() => setCurrentQuestionIdx((p) => Math.min(activeQuestions.length - 1, p + 1))}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-start gap-3">
+                  <HelpCircle className="mt-0.5 h-4 w-4 text-primary shrink-0" />
+                  <p className="text-base font-medium leading-relaxed">
+                    {activeQuestions[currentQuestionIdx]}
+                  </p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Video element view */}
           <div className="relative aspect-video overflow-hidden rounded-3xl border bg-black shadow-elegant">
-            {camOn ? (
+            {camOn || stream ? (
               <video ref={videoRef} autoPlay muted playsInline className="h-full w-full object-cover" />
             ) : (
               <div className="grid h-full w-full place-items-center bg-gradient-to-br from-card to-secondary">
@@ -102,9 +252,9 @@ function Recorder() {
                   <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl [background-image:var(--gradient-primary)] shadow-glow">
                     <Camera className="h-7 w-7 text-primary-foreground" />
                   </div>
-                  <p className="mt-4 text-sm text-muted-foreground">Enable your camera to begin</p>
-                  <Button variant="hero" size="sm" className="mt-4" onClick={() => setCamOn(true)}>
-                    Enable camera
+                  <p className="mt-4 text-sm text-muted-foreground">Enable your camera stream to practice</p>
+                  <Button variant="hero" size="sm" className="mt-4" onClick={onStart}>
+                    Enable camera & mic
                   </Button>
                   {camError && <p className="mt-3 text-xs text-destructive">{camError}</p>}
                 </div>
@@ -139,7 +289,7 @@ function Recorder() {
             </div>
           </div>
 
-          {/* Controls */}
+          {/* Controller buttons */}
           <div className="glass-strong flex flex-wrap items-center justify-between gap-3 rounded-2xl p-4">
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="icon" aria-label="Toggle camera" onClick={() => setCamOn((v) => !v)}>
@@ -152,8 +302,8 @@ function Recorder() {
 
             <div className="flex flex-wrap items-center gap-2">
               {status === "idle" && (
-                <Button variant="hero" size="lg" onClick={start} disabled={!camOn}>
-                  <CircleDot className="h-4 w-4" /> Start
+                <Button variant="hero" size="lg" onClick={onStart}>
+                  <CircleDot className="h-4 w-4" /> Start recording
                 </Button>
               )}
               {status === "recording" && (
@@ -176,24 +326,55 @@ function Recorder() {
                   </Button>
                 </>
               )}
-              <Button variant="ghost" size="icon" aria-label="Discard" onClick={reset}>
+              <Button variant="ghost" size="icon" aria-label="Discard" onClick={handleDiscard}>
                 <Trash2 className="h-4 w-4" />
               </Button>
             </div>
           </div>
 
-          {/* Mode selector */}
-          <div className="glass-strong rounded-2xl p-4">
-            <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">Mode</p>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {MODES.map((m) => (
-                <ModeButton key={m.id} m={m} active={mode === m.id} onClick={() => setMode(m.id)} />
-              ))}
+          {/* Job profile & mode selection */}
+          <div className="grid gap-4 md:grid-cols-2">
+            
+            {/* Mode selection */}
+            <div className="glass-strong rounded-2xl p-4">
+              <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">Practice Mode</p>
+              <div className="grid gap-2 grid-cols-2">
+                {MODES.map((m) => (
+                  <ModeButton key={m.id} m={m} active={mode === m.id} onClick={() => setMode(m.id)} />
+                ))}
+              </div>
             </div>
+
+            {/* Profile Selection */}
+            <div className="glass-strong rounded-2xl p-4">
+              <p className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">Select Job Profile</p>
+              <div className="grid gap-2 grid-cols-2">
+                {Object.keys(JOB_QUESTIONS).map((job) => (
+                  <button
+                    key={job}
+                    disabled={mode !== "interview"}
+                    onClick={() => {
+                      setJobProfile(job);
+                      setCurrentQuestionIdx(0);
+                    }}
+                    className={cn(
+                      "rounded-xl border bg-card/45 p-2.5 text-xs text-left transition font-semibold",
+                      jobProfile === job && mode === "interview"
+                        ? "border-primary/50 bg-primary/10 shadow-glow" 
+                        : "hover:bg-accent/40 disabled:opacity-50"
+                    )}
+                  >
+                    {job}
+                  </button>
+                ))}
+              </div>
+            </div>
+
           </div>
+
         </div>
 
-        {/* Live metrics */}
+        {/* Live signals feedback */}
         <aside className="space-y-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Live signals</p>
           <LiveMetric icon={Eye} label="Eye contact" value={metrics.eyeContact} suffix="%" />
@@ -202,7 +383,6 @@ function Recorder() {
           <LiveMetric icon={Music2} label="Pitch variance" value={metrics.pitchVariance} suffix="%" />
           <LiveMetric icon={Volume2} label="Volume" value={metrics.volumeConsistency} suffix="%" />
           <LiveMetric icon={ShieldCheck} label="Posture" value={metrics.postureScore} suffix="%" />
-          <LiveMetric icon={ShieldCheck} label="Head stability" value={metrics.headStability} suffix="%" />
         </aside>
       </div>
     </div>

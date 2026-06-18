@@ -115,6 +115,8 @@ function RootShell({ children }: { children: ReactNode }) {
   );
 }
 
+import { useSessionStore } from "@/store";
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
@@ -126,6 +128,12 @@ function RootComponent() {
 
 function AppShell() {
   useApplyTheme();
+  const initialize = useSessionStore((s) => s.initialize);
+  
+  useEffect(() => {
+    initialize();
+  }, [initialize]);
+
   const pathname = useRouter().state.location.pathname;
   const isLanding = pathname === "/";
   const hideFooter = pathname.startsWith("/recorder");

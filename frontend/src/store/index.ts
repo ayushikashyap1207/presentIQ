@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Session, SessionMetrics, SessionMode } from "@/types";
 import { MOCK_SESSIONS, MOCK_USER } from "@/lib/mock-data";
+import { checkBackendHealth, getSessions } from "../lib/api";
 
 // THEME STORE
 interface ThemeState {
@@ -31,11 +32,28 @@ export const useUserStore = create<UserState>((set) => ({
 // SESSION STORE
 interface SessionState {
   sessions: Session[];
+  backendActive: boolean;
+  initialize: () => Promise<void>;
   remove: (id: string) => void;
   add: (s: Session) => void;
 }
 export const useSessionStore = create<SessionState>((set) => ({
   sessions: MOCK_SESSIONS,
+  backendActive: false,
+  initialize: async () => {
+    const active = await checkBackendHealth();
+    set({ backendActive: active });
+    if (active) {
+      try {
+        const fetched = await getSessions();
+        if (fetched.length > 0) {
+          set({ sessions: fetched });
+        }
+      } catch (e) {
+        console.error("Failed to load sessions from backend:", e);
+      }
+    }
+  },
   remove: (id) => set((s) => ({ sessions: s.sessions.filter((x) => x.id !== id) })),
   add: (s) => set((st) => ({ sessions: [s, ...st.sessions] })),
 }));

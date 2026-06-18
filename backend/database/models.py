@@ -10,7 +10,7 @@ def generate_uuid():
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(String(36), primary key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     email = Column(String(255), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
@@ -24,7 +24,7 @@ class User(Base):
 class Session(Base):
     __tablename__ = "sessions"
 
-    id = Column(String(36), primary key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(255), nullable=False)
     status = Column(
@@ -47,7 +47,7 @@ class Session(Base):
 class Metrics(Base):
     __tablename__ = "metrics"
 
-    id = Column(String(36), primary key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), unique=True, nullable=False)
     
     # Video metrics
@@ -72,7 +72,7 @@ class Metrics(Base):
 class Feedback(Base):
     __tablename__ = "feedback"
 
-    id = Column(String(36), primary key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), unique=True, nullable=False)
     
     strengths = Column(JSON, default=list)  # JSON list of strings
@@ -89,7 +89,7 @@ class Feedback(Base):
 class Timeline(Base):
     __tablename__ = "timeline"
 
-    id = Column(String(36), primary key=True, default=generate_uuid)
+    id = Column(String(36), primary_key=True, default=generate_uuid)
     session_id = Column(String(36), ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False)
     
     start_seconds = Column(Float, nullable=False)
