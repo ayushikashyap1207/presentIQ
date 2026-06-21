@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 # Database imports
@@ -16,14 +16,15 @@ from repositories.user import UserRepository
 from repositories.session import SessionRepository
 
 # Schema imports
-from schemas.auth import UserCreate, UserResponse, Token
+from schemas.auth import UserCreate, UserResponse, Token, LoginRequest
 from schemas.session import SessionCreate, SessionResponse, SessionDetailResponse
 from schemas.metrics import MetricsBase, MetricsResponse
 from schemas.feedback import FeedbackBase, FeedbackResponse
 from schemas.timeline import TimelineResponse
 
 # Auth utilities
-from utils.auth import verify_password, get_password_hash, create_access_token, decode_access_token
+from core.security import decode_access_token
+from routers.auth import router as auth_router
 from utils.logger import get_logger
 
 # Service and Agent imports
@@ -60,73 +61,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+app.include_router(auth_router)
 
-def get_default_user(db: Session) -> User:
-    """Helper to seed and retrieve a default developer/demo user."""
-    default_email = "alex@presentiq.com"
-    user = UserRepository.get_by_email(db, default_email)
-    if not user:
-        logger.info("Seeding default user Alex...")
-        user_in = UserCreate(email=default_email, full_name="Alex", password="password123")
-        hashed = get_password_hash("password123")
-        user = UserRepository.create(db, user_in, hashed)
-    return user
+security = HTTPBearer()
 
 def get_current_user(
-    db: Session = Depends(get_db), 
-    token: Optional[str] = Depends(oauth2_scheme),
-    authorization: Optional[str] = Header(None)
+    creds: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
 ) -> User:
     """
-    Decodes JWT token to get current user. 
-    If token is missing/invalid, falls back to the default user Alex.
+    Decodes JWT token to get current user by ID. 
+    Strictly requires credentials and throws 401 if missing/invalid.
     """
-    if not token and authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ")[1]
+    user_id = decode_access_token(creds.credentials)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
         
-    if not token:
-        # Fallback to default user to allow frontend integration to run out-of-the-box
-        return get_default_user(db)
-        
-    payload = decode_access_token(token)
-    if payload is None:
-        return get_default_user(db)
-        
-    email: str = payload.get("sub")
-    if email is None:
-        return get_default_user(db)
-        
-    user = UserRepository.get_by_email(db, email=email)
-    if user is None:
-        return get_default_user(db)
+    user = UserRepository.get_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
         
     return user
 
-# ----------------- AUTH ENDPOINTS -----------------
-
-@app.post("/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
-    existing = UserRepository.get_by_email(db, user_in.email)
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    hashed = get_password_hash(user_in.password)
-    return UserRepository.create(db, user_in, hashed)
-
-@app.post("/auth/login", response_model=Token)
-def login_for_access_token(
-    db: Session = Depends(get_db),
-    form_data: OAuth2PasswordRequestForm = Depends()
-):
-    user = UserRepository.get_by_email(db, form_data.username)
-    if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    access_token = create_access_token(data={"sub": user.email})
-    return {"access_token": access_token, "token_type": "bearer"}
+# Auth endpoints are handled by auth_router included above.
 
 # ----------------- SESSION ENDPOINTS -----------------
 

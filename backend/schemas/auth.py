@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from datetime import datetime
 
@@ -20,6 +20,23 @@ class UserResponse(UserBase):
 class Token(BaseModel):
     access_token: str
     token_type: str
+    user: UserResponse
 
 class TokenData(BaseModel):
     email: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class SignupRequest(BaseModel):
+    full_name: str
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+
+UserSchema = UserResponse
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserSchema

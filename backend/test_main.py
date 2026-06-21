@@ -39,25 +39,36 @@ client = TestClient(app)
 def test_auth_flow():
     # 1. Register User
     register_response = client.post(
-        "/auth/register",
+        "/api/v1/auth/signup",
         json={"email": "test@presentiq.com", "full_name": "Test User", "password": "password123"}
     )
     assert register_response.status_code == 201
-    assert register_response.json()["email"] == "test@presentiq.com"
+    assert register_response.json()["user"]["email"] == "test@presentiq.com"
 
     # 2. Login User
     login_response = client.post(
-        "/auth/login",
-        data={"username": "test@presentiq.com", "password": "password123"}
+        "/api/v1/auth/login",
+        json={"email": "test@presentiq.com", "password": "password123"}
     )
     assert login_response.status_code == 200
     token_data = login_response.json()
     assert "access_token" in token_data
     assert token_data["token_type"] == "bearer"
+    assert "user" in token_data
 
 def test_session_lifecycle():
-    # Helper header for login
-    headers = {"Authorization": "Bearer dummy_token"}  # Auth defaults to seeded Alex when invalid/missing
+    # Register and login to get a real token
+    email = "lifecycle@presentiq.com"
+    client.post(
+        "/api/v1/auth/signup",
+        json={"email": email, "full_name": "Lifecycle User", "password": "lifecycle123"}
+    )
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "lifecycle123"}
+    )
+    token = login_response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
 
     # 1. Create Session
     create_response = client.post(

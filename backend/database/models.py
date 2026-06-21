@@ -12,8 +12,8 @@ class User(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    hashed_password = Column(String(255), nullable=False)
-    full_name = Column(String(255), nullable=True)
+    hashed_password = Column(String, nullable=False)
+    full_name = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -35,6 +35,8 @@ class Session(Base):
     audio_file_path = Column(String(1024), nullable=True)
     duration_seconds = Column(Integer, default=0)
     transcript_text = Column(String, nullable=True)
+    mode = Column(String(50), default="interview")
+    question = Column(String(1024), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
