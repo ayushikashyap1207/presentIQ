@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 # Database imports
@@ -36,6 +37,10 @@ from agents.fusion import MetricFusionAgent
 from agents.coaching import CoachingAgent
 from agents.trend import TrendAnalysisAgent
 
+# RAG imports
+from backend.rag.indexer import build_index, get_collection
+from backend.rag.retriever import pull_relevant_chunks
+
 # Initialize logging
 logger = get_logger(__name__)
 
@@ -46,10 +51,25 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler — runs startup tasks before serving requests."""
+    # Build the RAG vector index on startup (idempotent — skips if already indexed)
+    logger.info("[Startup] Building RAG knowledge index...")
+    try:
+        build_index()
+        logger.info("[Startup] RAG index ready.")
+    except Exception as e:
+        logger.warning(f"[Startup] RAG index build failed (non-fatal): {e}")
+    yield  # app runs here
+
 app = FastAPI(
     title="PresentIQ API",
     description="Multimodal presentation coaching API with signal processing and AI feedback.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS configuration
@@ -298,3 +318,131 @@ def get_analytics(
     sessions = SessionRepository.list_by_user(db, current_user.id)
     trends = TrendAnalysisAgent.analyze_trends(sessions)
     return trends
+
+
+# ----------------- RAG KNOWLEDGE Q&A ENDPOINT -----------------
+
+class AskRequest(BaseModel):
+    question: str
+    metrics: Optional[Dict[str, Any]] = None
+
+class AskResponse(BaseModel):
+    answer: str
+    sources: List[str]
+    chunks_used: int
+
+@app.post("/api/v1/ask", response_model=AskResponse)
+def ask_coach(
+    body: AskRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Free-form coaching Q&A endpoint.
+
+    If `metrics` are provided the pull agent identifies weak areas and
+    retrieves knowledge targeted to those weaknesses.  Otherwise, a
+    direct embedding search is performed against the full knowledge base.
+
+    Example questions:
+      - "How do I stop saying um?"
+      - "What is a good WPM for job interviews?"
+      - "How can I improve my eye contact on camera?"
+    """
+    logger.info(f"[Ask] '{body.question[:60]}' — user {current_user.email}")
+
+    # ── Step 1: Retrieve relevant chunks ─────────────────────────────────
+    if body.metrics:
+        chunks = pull_relevant_chunks(body.metrics, n_results=6)
+    else:
+        try:
+            collection = get_collection()
+            result = collection.query(
+                query_texts=[body.question],
+                n_results=min(6, max(collection.count(), 1)),
+                include=["documents"],
+            )
+            chunks = result["documents"][0] if result and result.get("documents") else []
+        except Exception as e:
+            logger.error(f"[Ask] ChromaDB query failed: {e}")
+            chunks = []
+
+    if not chunks:
+        return AskResponse(
+            answer="I don't have specific knowledge on that topic yet. Try asking about filler words, speaking pace, posture, eye contact, or vocal variety.",
+            sources=[],
+            chunks_used=0,
+        )
+
+    context = "\n\n---\n\n".join(chunks)
+
+    # ── Step 2: Extract unique source names from metadata ─────────────────
+    # Source names are inferred from chunk content headers (quick heuristic)
+    source_map = {
+        "filler": "filler_words_research",
+        "wpm": "wpm_norms",
+        "words per minute": "wpm_norms",
+        "pitch": "speech_coaching",
+        "volume": "speech_coaching",
+        "breathing": "speech_coaching",
+        "posture": "posture_eye_contact",
+        "eye contact": "posture_eye_contact",
+        "gesture": "body_language",
+        "head": "body_language",
+        "mirror": "body_language",
+    }
+    detected_sources: set[str] = set()
+    context_lower = context.lower()
+    for keyword, source in source_map.items():
+        if keyword in context_lower:
+            detected_sources.add(source)
+
+    sources_list = sorted(detected_sources) if detected_sources else ["speech_coaching"]
+
+    # ── Step 3: Call OpenAI with retrieved context ─────────────────────────
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        # Graceful degradation without API key
+        return AskResponse(
+            answer=(
+                "(OpenAI API key not configured — showing raw knowledge)\n\n"
+                + context[:800]
+            ),
+            sources=sources_list,
+            chunks_used=len(chunks),
+        )
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a presentation coach. Answer the question using only "
+                        "the provided knowledge. Be specific and practical. "
+                        "Cite technique names and numbers where available."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"KNOWLEDGE:\n{context}\n\n"
+                        f"QUESTION: {body.question}"
+                    ),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=512,
+        )
+        answer = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"[Ask] OpenAI call failed: {e}")
+        raise HTTPException(status_code=502, detail="Coaching service temporarily unavailable.")
+
+    return AskResponse(
+        answer=answer,
+        sources=sources_list,
+        chunks_used=len(chunks),
+    )

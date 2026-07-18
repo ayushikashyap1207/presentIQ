@@ -1,5 +1,5 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { ArrowLeft, Download, Sparkles, ThumbsUp, AlertTriangle, Lightbulb } from "lucide-react";
+import { ArrowLeft, Download, Sparkles, ThumbsUp, AlertTriangle, Lightbulb, BookOpen, Send, Loader2 } from "lucide-react";
 import { useSessionStore } from "@/store";
 import { MetricCard } from "@/components/common/metric-card";
 import { ChartCard } from "@/components/common/chart-card";
@@ -9,6 +9,34 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { fmtDate, fmtDuration } from "@/lib/format";
 import { MODE_LABEL } from "@/constants";
+import { useState } from "react";
+
+// ── Source name formatter ────────────────────────────────────────────────────
+const SOURCE_LABELS: Record<string, string> = {
+  filler_words_research: "Filler Words Research",
+  speech_coaching: "Speech Coaching",
+  posture_eye_contact: "Posture & Eye Contact",
+  body_language: "Body Language",
+  wpm_norms: "Speech Rate Norms",
+};
+function formatSourceName(raw: string): string {
+  return SOURCE_LABELS[raw] ?? raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ── /api/v1/ask helper ───────────────────────────────────────────────────────
+const API_BASE_URL = "http://localhost:8000";
+async function askCoach(
+  question: string,
+  metrics: Record<string, number>,
+): Promise<{ answer: string; sources: string[]; chunks_used: number }> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, metrics }),
+  });
+  if (!res.ok) throw new Error("Coach unavailable");
+  return res.json();
+}
 
 export const Route = createFileRoute("/sessions/$id")({
   head: ({ params }) => ({
@@ -31,6 +59,43 @@ function SessionDetail() {
   const { id } = Route.useParams();
   const session = useSessionStore((s) => s.sessions.find((x) => x.id === id));
   if (!session) throw notFound();
+
+  // Ask-the-Coach state
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [coachAnswer, setCoachAnswer] = useState<string | null>(null);
+  const [answerSources, setAnswerSources] = useState<string[]>([]);
+  const [askError, setAskError] = useState<string | null>(null);
+
+  // Sources returned by the coaching pipeline (stored in session once backend integration is complete)
+  const knowledgeSources: string[] = (session as any).sources ?? [];
+
+  async function handleAsk(e: React.FormEvent) {
+    e.preventDefault();
+    if (!question.trim()) return;
+    setAsking(true);
+    setCoachAnswer(null);
+    setAnswerSources([]);
+    setAskError(null);
+    try {
+      const metricsPayload: Record<string, number> = {
+        eye_contact_percentage: session.metrics.eyeContact,
+        average_wpm: session.metrics.wpm,
+        filler_words_count: session.metrics.fillerWords,
+        pitch_variance: session.metrics.pitchVariance,
+        volume_consistency: session.metrics.volumeConsistency,
+        posture_score: session.metrics.postureScore,
+        head_stability_score: session.metrics.headStability,
+      };
+      const result = await askCoach(question, metricsPayload);
+      setCoachAnswer(result.answer);
+      setAnswerSources(result.sources);
+    } catch {
+      setAskError("The coaching service is currently unavailable. Please try again later.");
+    } finally {
+      setAsking(false);
+    }
+  }
 
   const m = session.metrics;
   const radar = [
@@ -104,6 +169,124 @@ function SessionDetail() {
               ))}
             </ul>
           </ChartCard>
+
+          {/* ── Knowledge Sources Panel ─────────────────────────────── */}
+          <div className="lg:col-span-3">
+            <ChartCard
+              title={
+                <span className="flex items-center gap-2">
+                  <span className="grid h-7 w-7 place-items-center rounded-lg [background-image:var(--gradient-primary)] text-primary-foreground">
+                    <BookOpen className="h-3.5 w-3.5" />
+                  </span>
+                  Knowledge Sources
+                </span>
+              }
+              description="Research used to generate your coaching feedback"
+            >
+              {knowledgeSources.length > 0 ? (
+                <details className="group" open>
+                  <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent/60 text-xs font-semibold tabular-nums">
+                      {knowledgeSources.length}
+                    </span>
+                    Knowledge sources used
+                    <span className="ml-auto text-xs opacity-60 group-open:hidden">Show</span>
+                    <span className="ml-auto text-xs opacity-60 [display:none] group-open:inline">Hide</span>
+                  </summary>
+                  <ul className="mt-3 space-y-2">
+                    {knowledgeSources.map((src) => (
+                      <li
+                        key={src}
+                        className="flex items-center gap-2 rounded-lg bg-accent/40 px-3 py-2 text-sm"
+                      >
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full [background-image:var(--gradient-primary)]" />
+                        {formatSourceName(src)}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : (
+                <details className="group">
+                  <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
+                    <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-accent/60 text-xs font-semibold">5</span>
+                    Knowledge sources used (demo)
+                    <span className="ml-auto text-xs opacity-60 group-open:hidden">Show</span>
+                    <span className="ml-auto text-xs opacity-60 [display:none] group-open:inline">Hide</span>
+                  </summary>
+                  <ul className="mt-3 space-y-2">
+                    {Object.values(SOURCE_LABELS).map((label) => (
+                      <li
+                        key={label}
+                        className="flex items-center gap-2 rounded-lg bg-accent/40 px-3 py-2 text-sm"
+                      >
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full [background-image:var(--gradient-primary)]" />
+                        {label}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </ChartCard>
+          </div>
+
+          {/* ── Ask the Coach ───────────────────────────────────────── */}
+          <div className="lg:col-span-3">
+            <ChartCard
+              title="Ask the Coach"
+              description="Get evidence-based answers from the PresentIQ knowledge base"
+            >
+              <form onSubmit={handleAsk} className="flex gap-2">
+                <input
+                  id={`ask-coach-input-${id}`}
+                  type="text"
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder="Ask a follow-up question about your presentation…"
+                  className="flex-1 rounded-lg border border-border bg-accent/30 px-4 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50"
+                  disabled={asking}
+                />
+                <Button
+                  id={`ask-coach-submit-${id}`}
+                  type="submit"
+                  variant="hero"
+                  disabled={asking || !question.trim()}
+                  className="shrink-0"
+                >
+                  {asking ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                  {asking ? "Asking…" : "Ask"}
+                </Button>
+              </form>
+
+              {/* Answer box */}
+              {(coachAnswer || askError) && (
+                <details open className="mt-4 group">
+                  <summary className="flex cursor-pointer select-none list-none items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
+                    Coach response
+                    <span className="ml-auto text-xs opacity-60 group-open:hidden">Expand</span>
+                    <span className="ml-auto text-xs opacity-60 [display:none] group-open:inline">Collapse</span>
+                  </summary>
+                  <div className="mt-3 rounded-xl border border-border/60 bg-accent/20 p-4 text-sm leading-relaxed">
+                    {askError ? (
+                      <p className="text-destructive">{askError}</p>
+                    ) : (
+                      <>
+                        <p className="whitespace-pre-wrap">{coachAnswer}</p>
+                        {answerSources.length > 0 && (
+                          <p className="mt-3 text-xs text-muted-foreground">
+                            Sources: {answerSources.map(formatSourceName).join(" · ")}
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </details>
+              )}
+            </ChartCard>
+          </div>
         </TabsContent>
 
         <TabsContent value="charts" className="mt-4 grid gap-4 lg:grid-cols-2">
