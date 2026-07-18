@@ -58,17 +58,22 @@ export const Route = createFileRoute("/sessions/$id")({
 function SessionDetail() {
   const { id } = Route.useParams();
   const session = useSessionStore((s) => s.sessions.find((x) => x.id === id));
-  if (!session) throw notFound();
 
-  // Ask-the-Coach state
+  // Ask-the-Coach state — hooks must be called before any conditional returns
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   const [coachAnswer, setCoachAnswer] = useState<string | null>(null);
   const [answerSources, setAnswerSources] = useState<string[]>([]);
   const [askError, setAskError] = useState<string | null>(null);
 
-  // Sources returned by the coaching pipeline (stored in session once backend integration is complete)
-  const knowledgeSources: string[] = (session as any).sources ?? [];
+  // Throw notFound AFTER hooks (React rules) — TanStack Router catches this
+  if (!session) throw notFound();
+
+  // Snapshot into a non-null const so async closures have a narrowed type
+  const s = session;
+
+  // Sources returned by the coaching pipeline (populated when backend is connected)
+  const knowledgeSources: string[] = s.sources ?? [];
 
   async function handleAsk(e: React.FormEvent) {
     e.preventDefault();
@@ -79,13 +84,13 @@ function SessionDetail() {
     setAskError(null);
     try {
       const metricsPayload: Record<string, number> = {
-        eye_contact_percentage: session.metrics.eyeContact,
-        average_wpm: session.metrics.wpm,
-        filler_words_count: session.metrics.fillerWords,
-        pitch_variance: session.metrics.pitchVariance,
-        volume_consistency: session.metrics.volumeConsistency,
-        posture_score: session.metrics.postureScore,
-        head_stability_score: session.metrics.headStability,
+        eye_contact_percentage: s.metrics.eyeContact,
+        average_wpm: s.metrics.wpm,
+        filler_words_count: s.metrics.fillerWords,
+        pitch_variance: s.metrics.pitchVariance,
+        volume_consistency: s.metrics.volumeConsistency,
+        posture_score: s.metrics.postureScore,
+        head_stability_score: s.metrics.headStability,
       };
       const result = await askCoach(question, metricsPayload);
       setCoachAnswer(result.answer);

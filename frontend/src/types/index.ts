@@ -31,6 +31,7 @@ export interface Session {
   strengths: string[];
   improvements: string[];
   suggestions: string[];
+  sources?: string[];         // RAG knowledge sources used (populated by backend when available)
   timeline: TimelineEvent[];
 }
 

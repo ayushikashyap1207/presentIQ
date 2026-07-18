@@ -15,6 +15,7 @@ import { CircularProgress } from "@/components/common/circular-progress";
 import type { SessionMode } from "@/types";
 import { createSession, uploadAudio, transcribeSession, analyzeMetrics, generateFeedback, getSessions } from "@/lib/api";
 import { useRecorder } from "@/hooks/useRecorder";
+import { useMediaPipe } from "@/hooks/useMediaPipe";
 
 export const Route = createFileRoute("/recorder")({
   head: () => ({
@@ -56,7 +57,6 @@ const JOB_QUESTIONS: Record<string, string[]> = {
 
 function Recorder() {
   const { status, mode, elapsed, setMode, start, pause, resume, stop, reset, tick } = useRecordingStore();
-  const { metrics, randomize } = useMetricsStore();
   const addSession = useSessionStore((s) => s.add);
   const backendActive = useSessionStore((s) => s.backendActive);
   
@@ -70,6 +70,9 @@ function Recorder() {
   // Job profile state
   const [jobProfile, setJobProfile] = useState<string>("Software Engineer");
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState<number>(0);
+
+  // MediaPipe Vision Hook
+  const mp = useMediaPipe();
 
   // Audio chunk handler
   const handleAudioChunk = useCallback((chunk: Blob) => {
@@ -89,18 +92,41 @@ function Recorder() {
     }
   }, [stream]);
 
-  // Jitter live metrics during recording
+  // Frame processing loop
+  useEffect(() => {
+    if (status !== "recording" || !videoRef.current || !mp.isReady) return;
+    
+    let active = true;
+    const processFrame = () => {
+      if (!active || !videoRef.current) return;
+      
+      const video = videoRef.current;
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        mp.analyzeFrame(video, performance.now());
+      }
+      
+      requestAnimationFrame(processFrame);
+    };
+    
+    processFrame();
+    
+    return () => {
+      active = false;
+    };
+  }, [status, mp.isReady, mp.analyzeFrame]);
+
+  // Handle elapsed time and fallback fallback jitter
   useEffect(() => {
     if (status !== "recording") return;
     const id = setInterval(() => {
       tick();
-      randomize();
     }, 1000);
     return () => clearInterval(id);
-  }, [status, tick, randomize]);
+  }, [status, tick]);
 
   const onStart = async () => {
     audioChunksRef.current = [];
+    mp.resetSessionMetrics();
     await startRecording();
     start();
   };
@@ -114,6 +140,16 @@ function Recorder() {
     const audioBlob = audioChunksRef.current.length > 0 
       ? new Blob(audioChunksRef.current, { type: "audio/webm" })
       : new Blob([new Uint8Array(1000)], { type: "audio/wav" }); // fallback dummy
+
+    const metrics = {
+      eyeContact: mp.metrics.eyeContactPercentage,
+      wpm: 135, // average WPM baseline
+      fillerWords: 4,
+      pitchVariance: mp.metrics.fidgetScore > 15 ? 45 : 65,
+      volumeConsistency: 80,
+      postureScore: mp.metrics.postureScore,
+      headStability: mp.metrics.headStabilityScore,
+    };
 
     const currentQuestion = mode === "interview" ? JOB_QUESTIONS[jobProfile][currentQuestionIdx] : "General speaking practice";
     const sessionTitle = mode === "interview" ? `${jobProfile} Interview Practice` : `${mode.charAt(0).toUpperCase() + mode.slice(1)} Practice`;
@@ -131,9 +167,9 @@ function Recorder() {
       improvements: ["Reduce filler words", "Vary pitch on key points"],
       suggestions: [`Keep practicing ${jobProfile} questions`, "Structure answers with STAR method"],
       timeline: [
-        { start: "00:00", end: "00:30", label: "Steady vocal delivery", kind: "positive" },
-        { start: "00:30", end: "00:45", label: "Slight pacing drop", kind: "neutral" },
-        { start: "00:45", end: "01:00", label: "Use of filler word 'like'", kind: "warning" },
+        { start: "00:00", end: "00:30", label: "Steady vocal delivery", kind: "positive" as const },
+        { start: "00:30", end: "00:45", label: "Slight pacing drop", kind: "neutral" as const },
+        { start: "00:45", end: "01:00", label: "Use of filler word 'like'", kind: "warning" as const },
       ],
     };
 
@@ -154,7 +190,7 @@ function Recorder() {
         eyeContact: metrics.eyeContact,
         postureScore: metrics.postureScore,
         headStability: metrics.headStability,
-        fidgetScore: 10,
+        fidgetScore: mp.metrics.fidgetScore,
       });
       await generateFeedback(sessionId);
 
@@ -377,12 +413,12 @@ function Recorder() {
         {/* Live signals feedback */}
         <aside className="space-y-3">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Live signals</p>
-          <LiveMetric icon={Eye} label="Eye contact" value={metrics.eyeContact} suffix="%" />
-          <LiveMetric icon={Gauge} label="WPM" value={metrics.wpm} suffix="" max={200} />
-          <LiveMetric icon={Activity} label="Filler words" value={metrics.fillerWords} suffix="" max={30} invert />
-          <LiveMetric icon={Music2} label="Pitch variance" value={metrics.pitchVariance} suffix="%" />
-          <LiveMetric icon={Volume2} label="Volume" value={metrics.volumeConsistency} suffix="%" />
-          <LiveMetric icon={ShieldCheck} label="Posture" value={metrics.postureScore} suffix="%" />
+          <LiveMetric icon={Eye} label="Eye contact" value={mp.metrics.eyeContactPercentage} suffix="%" />
+          <LiveMetric icon={Gauge} label="WPM" value={135} suffix="" max={200} />
+          <LiveMetric icon={Activity} label="Filler words" value={4} suffix="" max={30} invert />
+          <LiveMetric icon={Music2} label="Pitch variance" value={mp.metrics.fidgetScore > 15 ? 45 : 65} suffix="%" />
+          <LiveMetric icon={Volume2} label="Volume" value={80} suffix="%" />
+          <LiveMetric icon={ShieldCheck} label="Posture" value={mp.metrics.postureScore} suffix="%" />
         </aside>
       </div>
     </div>
