@@ -1,7 +1,38 @@
-node_modules/
-backend/venv/
-.env
+# Python
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
 dist/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+out/
 build/
+
+# Environment
+.env
+.env.local
+.env.production
+*.env
+
+# DB
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# RAG vector store (auto-generated, do not commit)
+backend/rag/vector_store/
