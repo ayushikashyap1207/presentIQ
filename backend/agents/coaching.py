@@ -4,27 +4,16 @@ from typing import Dict, Any
 from schemas.metrics import MetricsBase
 from schemas.feedback import FeedbackBase
 from utils.logger import get_logger
+from backend.rag.retriever import pull_relevant_chunks
 
 logger = get_logger(__name__)
 
-COACHING_SYSTEM_PROMPT = """
-You are a senior communication coach and public speaking advisor.
-Your job is to analyze structured speech and physical metrics and generate professional, actionable, and objective feedback.
-
-CRITICAL ETHICAL GUARDRAILS:
-1. NEVER attempt to infer the speaker's emotional state, confidence level, personality traits, trustworthiness, or mental health.
-2. Only analyze and reference observable, measurable physical metrics (eye contact, posture, head stability, fidgeting, WPM, filler word count, pitch variance, volume consistency).
-3. Do not make pseudoscientific statements. All suggestions must be grounded in direct behavioral exercises.
-
-You must output a raw JSON object with the following fields:
-{
-  "strengths": ["list of 2-3 specific positive observations"],
-  "areas_to_improve": ["list of 2-3 specific behavioral areas for improvement"],
-  "exercises": ["list of 2 specific physical/vocal exercises to practice"],
-  "suggestions": ["list of 2-3 concrete tips for their next rehearsal"],
-  "summary": "A concise, encouraging, and objective 2-3 sentence summary of the session."
-}
-"""
+COACHING_SYSTEM_PROMPT = (
+    "You are an expert presentation coach with access to evidence-based "
+    "coaching research. Use the provided knowledge to give specific, "
+    "grounded feedback. Reference techniques by name. Be direct and "
+    "actionable. Return ONLY valid JSON."
+)
 
 class CoachingAgent:
     def __init__(self):
@@ -55,16 +44,28 @@ class CoachingAgent:
 
     def _generate_gpt_feedback(self, metrics: MetricsBase, transcript: str) -> FeedbackBase:
         metrics_dict = metrics.dict()
+
+        # ── RAG: pull relevant coaching knowledge before calling the LLM ──
+        retrieved_chunks = pull_relevant_chunks(metrics_dict, n_results=6)
+        context = "\n\n---\n\n".join(retrieved_chunks)
+
         user_message = f"""
-        Analyze the following session metrics and transcript.
-        
-        Metrics:
-        {json.dumps(metrics_dict, indent=2)}
-        
-        Transcript snippet:
-        "{transcript[:1500]}"
-        """
-        
+COACHING KNOWLEDGE (use this to ground your feedback):
+{context}
+
+SESSION METRICS:
+{json.dumps(metrics_dict, indent=2)}
+
+TRANSCRIPT (first 1500 chars):
+{transcript[:1500]}
+
+Return JSON with exactly these keys:
+- strengths: list of 2-3 things done well, citing specific metrics
+- improvements: list of 2-3 areas with named techniques from the knowledge above
+- priority_action: single most impactful change, with a specific drill
+- retrieved_sources: list of source names used from coaching knowledge
+"""
+
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -72,18 +73,18 @@ class CoachingAgent:
                 {"role": "user", "content": user_message}
             ],
             response_format={"type": "json_object"},
-            temperature=0.7
+            temperature=0.3
         )
-        
+
         result_text = response.choices[0].message.content
         data = json.loads(result_text)
-        
+
         return FeedbackBase(
             strengths=data.get("strengths", []),
-            areas_to_improve=data.get("areas_to_improve", []),
-            exercises=data.get("exercises", []),
-            suggestions=data.get("suggestions", []),
-            summary=data.get("summary", "")
+            areas_to_improve=data.get("improvements", []),
+            exercises=data.get("priority_action", "").splitlines()[:2],
+            suggestions=data.get("retrieved_sources", []),
+            summary=data.get("priority_action", "")
         )
 
     def _generate_template_feedback(self, metrics: MetricsBase) -> FeedbackBase:
