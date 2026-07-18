@@ -36,3 +36,7 @@ Thumbs.db
 
 # RAG vector store (auto-generated, do not commit)
 backend/rag/vector_store/
+
+# Training pipeline (data and model weights, do not commit)
+backend/training/data/
+backend/training/checkpoints/
